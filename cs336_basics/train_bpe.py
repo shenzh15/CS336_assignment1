@@ -81,22 +81,27 @@ def pop_best_pair(heap, version, pair_cnt):
             return best
     return None      # heap is empty
 
-def apply_bpe_merge(best_pair, heap, version, pair_cnt, tokens):
+def apply_bpe_merge(best_pair, heap, version, pair_cnt, byte_tuple_freq, pair_occurrences):
     """Execute BPE merge operation"""
     a, b = best_pair
     ab = a + b
     pair_cnt[best_pair] = 0
     version[best_pair] -= 1    # invalidate old entries
 
+    affected_seqs = pair_occurrences.pop(best_pair, set())
     # Record sequences to delete
     to_delete = set()
     # Record sequences to add
     to_add = {}
-
-    for seq, f in tokens.items():
+    for seq in affected_seqs:
+        f = byte_tuple_freq[seq]
         toks = list(seq)
-        i = 0
+        
         modified = False
+        for i in range(len(toks) - 1):
+            pair_occurrences[(toks[i], toks[i + 1])].discard(seq)
+            
+        i = 0
         while i < len(toks) - 1:
             if toks[i] == a and toks[i + 1] == b:
                 # ---- Decrease old counts ---------------------
@@ -115,6 +120,7 @@ def apply_bpe_merge(best_pair, heap, version, pair_cnt, tokens):
                 toks[i:i + 2] = [ab]
                 modified = True
 
+                new_seq = tuple(toks)
                 if i:
                     left = (toks[i - 1], ab)
                     pair_cnt[left] += f
@@ -130,15 +136,18 @@ def apply_bpe_merge(best_pair, heap, version, pair_cnt, tokens):
 
         if modified:
             to_delete.add(seq)
-            new_seq = tuple(toks)
-            to_add[new_seq] = to_add.get(new_seq, 0) + f
+            to_add[new_seq] = f
 
     # Execute delete and add operations
     for seq in to_delete:
-        del tokens[seq]
-    tokens.update(to_add)
+        del byte_tuple_freq[seq]
+    byte_tuple_freq.update(to_add)
 
-    return tokens, ab
+    for new_seq in to_add:
+        for i in range(len(new_seq) - 1):
+            pair_occurrences[(new_seq[i], new_seq[i + 1])].add(new_seq)
+
+    return byte_tuple_freq, ab
 
 def pre_tokenize_chunk(args):
     start, end, input_path, special_tokens = args
@@ -196,14 +205,15 @@ def train_bpe(
             word_to_byte_tuple(word): c
             for word, c in global_word_freq.items()
         }
-        tokens = byte_tuple_freq
 
+        pair_occurrences = defaultdict(set)
         pair_cnt = defaultdict(int)
         # pair_cnt = Counter()
-        for seq, f in tokens.items():
+        for seq, f in byte_tuple_freq.items():
             for i in range(len(seq) - 1):
                 pair_cnt[(seq[i], seq[i + 1])] += f
-
+                pair_occurrences[(seq[i], seq[i + 1])].add(seq)
+        
         # Heap elements: (-freq, version, pair); version is used for lazy invalidation
         version = {p: 0 for p in pair_cnt}
         heap = [(-c, 0, p) for p, c in pair_cnt.items()]
@@ -215,8 +225,8 @@ def train_bpe(
             best_pair = pop_best_pair(heap, version, pair_cnt)
             if not best_pair or pair_cnt[best_pair] == 0:
                 break
-            tokens, new_tok = apply_bpe_merge(best_pair, heap, version,
-                                              pair_cnt, tokens)
+            byte_tuple_freq, new_tok = apply_bpe_merge(best_pair, heap, version,
+                                              pair_cnt, byte_tuple_freq, pair_occurrences)
             id_to_token[i_vocab_size] = new_tok
             i_vocab_size += 1
             merged.append(best_pair)
