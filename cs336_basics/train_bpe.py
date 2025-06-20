@@ -3,8 +3,9 @@ import regex as re
 from typing import BinaryIO
 from collections import Counter, defaultdict
 from multiprocessing import Pool
-import heapq
+import time
 import json
+from tqdm import tqdm
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -58,91 +59,77 @@ def word_to_byte_tuple(word):
     b = word.encode("utf-8")
     return tuple(b[i:i+1] for i in range(len(b)))
 
-def pop_best_pair(heap, version, pair_cnt):
-    """Find the best pair to merge from the heap"""
-    while heap:
-        neg_f, ver, p = heapq.heappop(heap)
-        if version[p] == ver and -neg_f == pair_cnt[p] and neg_f != 0:   # valid
-            freq_top = -neg_f
-            bucket = [p]
-
-            # Also temporarily extract other pairs with the same frequency from the heap
-            while heap and -heap[0][0] == freq_top:
-                n2, v2, p2 = heapq.heappop(heap)
-                if version[p2] == v2 and -n2 == pair_cnt[p2]:
-                    bucket.append(p2)
-
-            # best = sorted(bucket, key=lambda x: (x[0], x[1]), reverse=True)[0]
-            best = max(bucket)        # lexicographically largest
-            for other in bucket:
-                if other is not best:
-                    heapq.heappush(heap, (-pair_cnt[other], version[other], other))
-
-            return best
-    return None      # heap is empty
-
-def apply_bpe_merge(best_pair, heap, version, pair_cnt, byte_tuple_freq, pair_occurrences):
+def apply_bpe_merge(best_pair, pair_cnt, byte_tuple_freq, pair_occurrences):
     """Execute BPE merge operation"""
     a, b = best_pair
     ab = a + b
-    pair_cnt[best_pair] = 0
-    version[best_pair] -= 1    # invalidate old entries
+    pair_cnt.pop(best_pair, None)
 
     affected_seqs = pair_occurrences.pop(best_pair, set())
-    # Record sequences to delete
-    to_delete = set()
-    # Record sequences to add
+
+    to_delete = []
     to_add = {}
+
+    pair_deltas = {}
+
     for seq in affected_seqs:
         f = byte_tuple_freq[seq]
         toks = list(seq)
         
         modified = False
+
         for i in range(len(toks) - 1):
-            pair_occurrences[(toks[i], toks[i + 1])].discard(seq)
-            
+            pair = (toks[i], toks[i + 1])
+            if pair in pair_occurrences:  # Avoid creating empty sets in defaultdict
+                pair_occurrences[pair].discard(seq)
+        
+        new_toks = []
         i = 0
-        while i < len(toks) - 1:
-            if toks[i] == a and toks[i + 1] == b:
+        while i < len(toks):
+            if i < len(toks) - 1 and toks[i] == a and toks[i + 1] == b:
                 # ---- Decrease old counts ---------------------
-                if i:
-                    left = (toks[i - 1], a)
-                    pair_cnt[left] -= f
-                    version[left] = version.get(left, 0) - 1
-                    heapq.heappush(heap, (-pair_cnt[left], version[left], left))
+                if new_toks:
+                    left = (new_toks[-1], a)
+                    pair_deltas[left] = pair_deltas.get(left, 0) - f
                 if i + 2 < len(toks):
                     right = (b, toks[i + 2])
-                    pair_cnt[right] -= f
-                    version[right] = version.get(right, 0) - 1
-                    heapq.heappush(heap, (-pair_cnt[right], version[right], right))
+                    pair_deltas[right] = pair_deltas.get(right, 0) - f
 
                 # ---- Merge itself ---------------------
-                toks[i:i + 2] = [ab]
+                new_toks.append(ab)
                 modified = True
 
-                new_seq = tuple(toks)
-                if i:
-                    left = (toks[i - 1], ab)
-                    pair_cnt[left] += f
-                    version[left] = version.get(left, 0) - 1
-                    heapq.heappush(heap, (-pair_cnt[left], version[left], left))
-                if i + 1 < len(toks):
-                    right = (ab, toks[i + 1])
-                    pair_cnt[right] += f
-                    version[right] = version.get(right, 0) - 1
-                    heapq.heappush(heap, (-pair_cnt[right], version[right], right))
+                if len(new_toks) > 1:
+                    left = (new_toks[-2], ab)
+                    pair_deltas[left] = pair_deltas.get(left, 0) + f
+                if i + 2 < len(toks):
+                    right = (ab, toks[i + 2])
+                    pair_deltas[right] = pair_deltas.get(right, 0) + f
+                i += 2  # Skip merged token
             else:
+                new_toks.append(toks[i])
                 i += 1
 
         if modified:
-            to_delete.add(seq)
-            to_add[new_seq] = f
+            to_delete.append(seq)
+            to_add[tuple(new_toks)] = f  
 
-    # Execute delete and add operations
+    # update pair_cnt
+    for pair, delta in pair_deltas.items():
+        if delta:
+            current = pair_cnt.get(pair, 0)
+            new_count = current + delta
+            if new_count <= 0:
+                pair_cnt.pop(pair, None)
+            else:
+                pair_cnt[pair] = new_count
+
+    # update byte_tuple_freq
     for seq in to_delete:
         del byte_tuple_freq[seq]
     byte_tuple_freq.update(to_add)
 
+    # update pair_occurrences
     for new_seq in to_add:
         for i in range(len(new_seq) - 1):
             pair_occurrences[(new_seq[i], new_seq[i + 1])].add(new_seq)
@@ -173,14 +160,14 @@ def train_bpe(
     special_tokens: list[str],
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-    ## Usage
+    
+    show_progress = kwargs.get('show_progress', False)
+
     with open(input_path, "rb") as f:
-        num_processes = 1
+        num_processes = min(20, os.cpu_count() or 1)
         boundaries = find_chunk_boundaries(f, num_processes,
                                            "<|endoftext|>".encode("utf-8"))
 
-        # The following is a serial implementation, but you can parallelize this
-        # by sending each start/end pair to a set of processes.
         args_list = []
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             # Run pre-tokenization on your chunk and store the counts for each pre-token
@@ -208,39 +195,51 @@ def train_bpe(
 
         pair_occurrences = defaultdict(set)
         pair_cnt = defaultdict(int)
-        # pair_cnt = Counter()
         for seq, f in byte_tuple_freq.items():
             for i in range(len(seq) - 1):
                 pair_cnt[(seq[i], seq[i + 1])] += f
                 pair_occurrences[(seq[i], seq[i + 1])].add(seq)
         
-        # Heap elements: (-freq, version, pair); version is used for lazy invalidation
-        version = {p: 0 for p in pair_cnt}
-        heap = [(-c, 0, p) for p, c in pair_cnt.items()]
-        heapq.heapify(heap)
-
         merged = []
         i_vocab_size = len(vocab)
+        
+        if show_progress:
+            progress_bar = tqdm(total=vocab_size - i_vocab_size, 
+                                desc="Training BPE", 
+                                unit="merges")
+        
         while i_vocab_size < vocab_size:
-            best_pair = pop_best_pair(heap, version, pair_cnt)
-            if not best_pair or pair_cnt[best_pair] == 0:
+            max_freq = max(pair_cnt.values())
+            candidates = [pair for pair, freq in pair_cnt.items() if freq == max_freq]
+            best_pair = max(candidates)  # lexicographically largest
+            if not best_pair:
                 break
-            byte_tuple_freq, new_tok = apply_bpe_merge(best_pair, heap, version,
+            byte_tuple_freq, new_tok = apply_bpe_merge(best_pair,
                                               pair_cnt, byte_tuple_freq, pair_occurrences)
             id_to_token[i_vocab_size] = new_tok
             i_vocab_size += 1
             merged.append(best_pair)
+            
+            if show_progress:
+                progress_bar.update(1)
+                progress_bar.set_postfix({
+                    'vocab_size': i_vocab_size,
+                    'max_freq': max_freq
+                })
+        
+        if show_progress:
+            progress_bar.close()
 
         return id_to_token, merged
 
 if __name__ == "__main__":
-    id_to_token, merged = train_bpe("./data/haha.txt", 300, ["<|endoftext|>"])
+    id_to_token, merged = train_bpe("./data/owt_train.txt", 32000, ["<|endoftext|>"], show_progress=True)
     # id_to_token, merged = train_bpe("./data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"])
 
-    with open("tokenizer_vocab_haha.json", "w", encoding="utf-8") as f:
+    with open("tokenizer_vocab_owt_32k.json", "w", encoding="utf-8") as f:
         json.dump({
             str(k): v.hex() for k, v in id_to_token.items()
         }, f, indent=2)
-    with open("tokenizer_merges_haha.tsv", "w", encoding="utf-8") as f:
+    with open("tokenizer_merges_owt_32k.txt", "w", encoding="utf-8") as f:
         for a, b in merged:
             f.write(f"{a.hex()}\t{b.hex()}\n")
