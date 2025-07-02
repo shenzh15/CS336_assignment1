@@ -233,13 +233,20 @@ def train_bpe(
         return id_to_token, merged
 
 if __name__ == "__main__":
-    id_to_token, merged = train_bpe("./data/owt_train.txt", 32000, ["<|endoftext|>"], show_progress=True)
-    # id_to_token, merged = train_bpe("./data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"])
+    # id_to_token, merged = train_bpe("./data/owt_train.txt", 32000, ["<|endoftext|>"], show_progress=True)
+    id_to_token, merged = train_bpe("./data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"], show_progress=True)
 
-    with open("tokenizer_vocab_owt_32k.json", "w", encoding="utf-8") as f:
+    # with open("tokenizer_vocab_owt_32k.json", "w", encoding="utf-8") as f:
+    #     json.dump({
+    #         str(k): v.hex() for k, v in id_to_token.items()
+    #     }, f, indent=2)
+    # with open("tokenizer_merges_owt_32k.txt", "w", encoding="utf-8") as f:
+    #     for a, b in merged:
+    #         f.write(f"{a.hex()}\t{b.hex()}\n")
+    with open("tokenizer_vocab_tinystories_10k.json", "w", encoding="utf-8") as f:
         json.dump({
             str(k): v.hex() for k, v in id_to_token.items()
         }, f, indent=2)
-    with open("tokenizer_merges_owt_32k.txt", "w", encoding="utf-8") as f:
+    with open("tokenizer_merges_tinystories_10k.txt", "w", encoding="utf-8") as f:
         for a, b in merged:
             f.write(f"{a.hex()}\t{b.hex()}\n")
