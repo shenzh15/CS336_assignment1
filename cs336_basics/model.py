@@ -54,7 +54,7 @@ class RMSNorm(torch.nn.Module):
         result = x * torch.rsqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps) * self.weight
         return result.to(input_type)
 
-class SwiGLU(torch.nn.Module):
+class SwiGLU(torch.nn.Module):  # Feedforward network
     def __init__(self, d_model: int, d_ff: int = None, device = None, dtype = None):
         super().__init__()
         if dtype is None:
@@ -239,8 +239,15 @@ class transformer_lm(torch.nn.Module):
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.rope_theta = rope_theta
-        self.token_embedding = Embedding(vocab_size, d_model, device=device, dtype=dtype)
-        self.layers = torch.nn.ModuleList([transformer_block(d_model, num_heads, d_ff, context_length, rope_theta, device=device, dtype=dtype) for _ in range(num_layers)])
+        self.token_embedding = Embedding(
+            vocab_size, d_model, device=device, dtype=dtype
+        )
+        self.layers = torch.nn.ModuleList([
+            transformer_block(
+                d_model, num_heads, d_ff, context_length, rope_theta, 
+                device=device, dtype=dtype
+            ) for _ in range(num_layers)
+        ])
         self.ln = RMSNorm(d_model, device=device, dtype=dtype)
         self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
 
