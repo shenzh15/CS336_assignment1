@@ -1,0 +1,30 @@
+############################################
+# Call uv directly in Arguments
+############################################
+Universe        = vanilla
+
+Executable      = ./run_train.sh
+getenv          = True
+# ---------------- Queue Labels & Resources ----------------
++UseOS          = "el9"
++JobCategory    = "medium"
+
+request_gpus    = 1
+request_cpus    = 2
+request_memory  = 16G
+
+# ---------------- File Transfer ----------------
+should_transfer_files    = YES
+when_to_transfer_output  = ON_EXIT
+# transfer_input_files optional: include code and configs
+# transfer_input_files   = train_lm.py,config_examples/TinyStory.json
+
+# Only run on nodes with L40S in GPU name
+requirements    = regexp("L40S", TARGET.GPUs_DeviceName)
+
+# ---------------- Logging ----------------
+log     = logs/condor.$(ClusterId).$(Process).log
+output  = logs/condor.$(ClusterId).$(Process).out
+error   = logs/condor.$(ClusterId).$(Process).err
+
+queue

@@ -1,0 +1,1 @@
+uv run python generate.py --config config_examples/TinyStory.json --tokenizer-path ../tokenizer_models --vocab-filename tokenizer_vocab_tinystories_10k.json --merges-filename tokenizer_merges_tinystories_10k.txt --top-p 0.8 --temperature 0.9 --prompt "Today is Sunday," --checkpoint checkpoints/tiny_story-lr_1e-2_1e-5_2000_warmup/final_checkpoint.pt --max-tokens 8000 --seed 43

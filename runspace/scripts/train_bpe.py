@@ -29,7 +29,7 @@ def train_and_save_bpe(
         special_tokens = ["<|endoftext|>"]
     
     if output_dir is None:
-        output_dir = os.path.dirname(__file__)
+        output_dir = os.path.dirname(os.path.dirname(__file__))
     
     print(f"Starting BPE training...")
     print(f"Input file: {input_file}")

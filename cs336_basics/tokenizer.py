@@ -123,7 +123,7 @@ class Tokenizer:
                 result.append(self.token_to_id[special_token])
                 match_idx += 1
         return result
-    # ------------deprecated old method------------
+    # ------------end of deprecated old method------------
 
     def decode(self, ids: list[int]) -> str:
         tokens = []

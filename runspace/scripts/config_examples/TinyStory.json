@@ -1,0 +1,33 @@
+{
+  "comment": "TinyStory model configuration for testing",
+  
+  "vocab_size": 10000,
+  "context_length": 256,
+  "d_model": 512,
+  "num_layers": 4,
+  "num_heads": 16,
+  "d_ff": 1344,
+  "rope_theta": 10000.0,
+  
+  "batch_size": 64,
+  "learning_rate": 1e-2,
+  "min_learning_rate": 1e-5,
+  "weight_decay": 0.01,
+  "warmup_iters": 2000,
+  "max_iters": 20000,
+  "eval_interval": 200,
+  "eval_iters": 50,
+  "log_interval": 50,
+  "save_interval": 2000000,
+  
+  "optimizer_type": "adamw",
+  "betas": [0.9, 0.95],
+  "eps": 1e-8,
+  
+  "train_data_path": "../tokenized_data/TinyStoriesV2-GPT4-train_tokens.npy",
+  "val_data_path": "../tokenized_data/TinyStoriesV2-GPT4-valid_tokens.npy",
+  
+  "checkpoint_dir": "checkpoints/tiny_story-lr_1e-2_1e-5_2000_warmup",
+  "wandb_project": "cs336-tiny-story",
+  "wandb_run_name": "tiny_story_train_lr_1e-2_1e-5_2000_warmup"
+}

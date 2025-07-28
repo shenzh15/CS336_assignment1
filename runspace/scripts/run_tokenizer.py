@@ -58,8 +58,9 @@ def encode_file(input_file: str, output_file: str, chunk_size: int = 8192, max_t
     vocab_file, merges_file = get_tokenizer_for_file(input_file)
     print(f"Using tokenizer: {vocab_file}, {merges_file}")
     
-    # Load tokenizer
-    tokenizer = Tokenizer.from_files(vocab_file, merges_file)
+    # Load tokenizer with special tokens
+    # very important to include <|endoftext|> in the special tokens
+    tokenizer = Tokenizer.from_files(vocab_file, merges_file, ["<|endoftext|>"])
     
     # Get file size for progress display
     file_size = os.path.getsize(input_file)
@@ -95,6 +96,10 @@ def encode_file(input_file: str, output_file: str, chunk_size: int = 8192, max_t
     min_token_id = min(all_tokens) if all_tokens else 0
     print(f"Token ID range: {min_token_id} - {max_token_id}")
     
+    # Check for EOS tokens
+    eos_count = sum(1 for token in all_tokens if token == 256)
+    print(f"EOS tokens found: {eos_count} ({eos_count/len(all_tokens)*100:.4f}%)")
+    
     if max_token_id > 65535:
         print(f"Warning: Maximum token ID ({max_token_id}) exceeds uint16 range (0-65535)")
         print("Consider using uint32 instead of uint16")
@@ -120,20 +125,27 @@ def encode_file(input_file: str, output_file: str, chunk_size: int = 8192, max_t
 
 def main():
     parser = argparse.ArgumentParser(description="Encode text files using BPE tokenizer")
-    parser.add_argument("--input", "-i", help="Input file path (if not specified, process all files in data/)")
-    parser.add_argument("--output", "-o", help="Output directory (default: tokenized_data/)")
-    parser.add_argument("--chunk-size", type=int, default=8192, help="Chunk size for reading files (default: 8192)")
-    parser.add_argument("--max-tokens", type=int, help="Maximum number of tokens to encode per file")
-    parser.add_argument("--list", action="store_true", help="List available data files")
+    parser.add_argument("--input", "-i", 
+                        help="Input file path (if not specified, process all files in data/)")
+    parser.add_argument("--output", "-o",
+                        help="Output directory (default: ../tokenized_data/)")
+    parser.add_argument("--data-dir", "-d", default="../../data", 
+                        help="Data directory containing text files (default: ../../data)")
+    parser.add_argument("--chunk-size", type=int, default=8192, 
+                        help="Chunk size for reading files (default: 8192)")
+    parser.add_argument("--max-tokens", type=int, 
+                        help="Maximum number of tokens to encode per file")
+    parser.add_argument("--list", action="store_true", 
+                        help="List available data files")
     
     args = parser.parse_args()
     
     # Create output directory
-    output_dir = args.output or "tokenized_data"
+    output_dir = args.output or "../tokenized_data"
     os.makedirs(output_dir, exist_ok=True)
     
     # List available files
-    data_dir = "../data"
+    data_dir = args.data_dir
     if not os.path.exists(data_dir):
         print(f"Error: Data directory '{data_dir}' not found")
         return
@@ -156,7 +168,8 @@ def main():
             return
         
         input_file = args.input
-        output_file = os.path.join(output_dir, os.path.splitext(os.path.basename(input_file))[0] + "_tokens.npy")
+        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        output_file = os.path.join(output_dir, base_name + "_tokens.npy")
         
         encode_file(input_file, output_file, args.chunk_size, args.max_tokens)
     
@@ -167,11 +180,13 @@ def main():
         
         for filename in data_files:
             input_file = os.path.join(data_dir, filename)
-            output_file = os.path.join(output_dir, os.path.splitext(filename)[0] + "_tokens.npy")
+            base_name = os.path.splitext(filename)[0]
+            output_file = os.path.join(output_dir, base_name + "_tokens.npy")
             
             print(f"\n{'='*50}")
             try:
-                encode_file(input_file, output_file, args.chunk_size, args.max_tokens)
+                encode_file(input_file, output_file, args.chunk_size,
+                            args.max_tokens)
                 print(f"✅ Successfully processed {filename}")
             except Exception as e:
                 print(f"❌ Error processing {filename}: {e}")
