@@ -8,7 +8,7 @@ import sys
 import time
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -17,7 +17,7 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from cs336_basics.model import transformer_lm
-from cs336_basics.optimizer import AdamW, SGD, get_lr_cosine_schedule
+from cs336_basics.optimizer import AdamW, SGD, get_lr_cosine_schedule, clip_grad_norm
 from cs336_basics.loss import cross_entropy
 from cs336_basics.data import get_batch
 from cs336_basics.serialization import save_checkpoint, load_checkpoint
@@ -75,6 +75,9 @@ class TrainingConfig:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float32
         self.compile_model = False  # Use torch.compile for speedup
+        
+        # Gradient clipping
+        self.grad_clip = 3.0  # Maximum L2 norm for gradient clipping (set to None to disable)
         
     def from_dict(self, config_dict: Dict[str, Any]):
         """Update config from dictionary."""
@@ -140,6 +143,87 @@ class MemoryEfficientDataLoader:
             )
         
         return X, Y
+
+
+class ModelMonitor:
+    """Monitor activation norms, weight norms, and gradient norms during training."""
+    
+    def __init__(self, model):
+        self.model = model
+        self.activations = []
+        self.hooks = []
+        self._setup_hooks()
+    
+    def _setup_hooks(self):
+        """Setup forward hooks on key layers."""
+        # Monitor key layers following standard practice
+        target_modules = [
+            self.model.token_embedding,
+            self.model.ln,
+            self.model.lm_head
+        ]
+        
+        # Add first and last transformer layers
+        if hasattr(self.model, 'layers') and len(self.model.layers) > 0:
+            target_modules.extend([
+                self.model.layers[0],   # First layer
+                self.model.layers[-1]   # Last layer
+            ])
+        
+        # Register hooks
+        for module in target_modules:
+            hook = module.register_forward_hook(self._activation_hook)
+            self.hooks.append(hook)
+    
+    def _activation_hook(self, module, input, output):
+        """Hook function to capture activations."""
+        # Suppress unused parameter warnings - these are required by PyTorch hook signature
+        _ = module, input
+        
+        if isinstance(output, torch.Tensor):
+            self.activations.append(output.detach())
+        elif isinstance(output, tuple) and len(output) > 0:
+            # Handle cached models that return (output, cache)
+            if isinstance(output[0], torch.Tensor):
+                self.activations.append(output[0].detach())
+    
+    def get_norms(self):
+        """Get all monitoring metrics: activation, weight, and gradient norms."""
+        norms = {}
+        
+        # Activation norm
+        if self.activations:
+            activation_norm = torch.nn.utils.get_total_norm(self.activations, norm_type=2.0)
+            norms["activation_norm"] = activation_norm.item()
+        else:
+            norms["activation_norm"] = 0.0
+        
+        # Weight and gradient norms
+        parameters = [p for p in self.model.parameters() if p.requires_grad]
+        
+        # Weight norm
+        weight_norm = torch.nn.utils.get_total_norm(parameters, norm_type=2.0)
+        norms["weight_norm"] = weight_norm.item()
+        
+        # Gradient norm
+        gradients = [p.grad for p in parameters if p.grad is not None]
+        if gradients:
+            grad_norm = torch.nn.utils.get_total_norm(gradients, norm_type=2.0)
+            norms["grad_norm"] = grad_norm.item()
+        else:
+            norms["grad_norm"] = 0.0
+        
+        return norms
+    
+    def clear_activations(self):
+        """Clear captured activations to prevent memory leak."""
+        self.activations.clear()
+    
+    def cleanup(self):
+        """Remove all hooks."""
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks.clear()
 
 
 class TrainingLogger:
@@ -310,6 +394,9 @@ def train_model(config: TrainingConfig, wandb_resume_id: str = None):
         config=config
     )
     
+    # Initialize model monitor
+    model_monitor = ModelMonitor(model)
+    
     # Resume from checkpoint if specified
     start_iteration = 0
     if config.resume_from:
@@ -354,15 +441,33 @@ def train_model(config: TrainingConfig, wandb_resume_id: str = None):
         # Backward pass
         optimizer.zero_grad()
         loss.backward()
+        
+
+        # Gradient clipping using SAME parameter list
+        if config.grad_clip is not None:
+            clip_grad_norm(list(model.parameters()), config.grad_clip)  
+            # there is a sad story, see: https://shenzh15.github.io/AI_Learning_note/#/gradient_clipping_bug_story
+
         optimizer.step()
         
         # Logging
         if iteration % config.log_interval == 0:
-            logger.log({
+            # Get monitoring metrics (activations from current batch only)
+            norms = model_monitor.get_norms()
+            
+            # Log training metrics including norms
+            metrics = {
                 "train_loss": loss.item(),
                 "learning_rate": lr,
-                "iteration": iteration
-            }, iteration)
+                "iteration": iteration,
+                "activation_norm": norms["activation_norm"],
+                "weight_norm": norms["weight_norm"],
+                "grad_norm": norms["grad_norm"]
+            }
+            logger.log(metrics, iteration)
+        
+        # Always clear activations after each iteration to prevent accumulation
+        model_monitor.clear_activations()
         
         # Evaluation
         if iteration % config.eval_interval == 0:
@@ -408,6 +513,8 @@ def train_model(config: TrainingConfig, wandb_resume_id: str = None):
     print(f"Final train loss: {losses['train']:.4f}")
     print(f"Final validation loss: {losses['val']:.4f}")
     
+    # Cleanup
+    model_monitor.cleanup()
     logger.finish()
 
 
@@ -520,6 +627,7 @@ def main():
         config.device = "cuda" if torch.cuda.is_available() else "cpu"
     
     print(f"Using device: {config.device}")
+    print(f"Gradient clipping threshold: {config.grad_clip}")
     
     # Start training
     train_model(config, wandb_resume_id=wandb_resume_id)

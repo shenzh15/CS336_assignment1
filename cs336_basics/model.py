@@ -158,7 +158,7 @@ class multihead_self_attention(torch.nn.Module):
         return self.out(attention)
 
 class multihead_self_attention_with_rope(torch.nn.Module):
-    _rope_cache = {}  # 改为基于参数的缓存字典
+    _rope_cache = {}  # Parameter-based cache dictionary
     
     def __init__(self, d_model: int, num_heads: int, max_seq_len: int, theta: float, device = None, dtype = None):
         super().__init__()
@@ -173,7 +173,7 @@ class multihead_self_attention_with_rope(torch.nn.Module):
         self.qkv = Linear(d_model, 3 * self.hd_k, device=device, dtype=dtype)
         self.out = Linear(self.hd_k, d_model, device=device, dtype=dtype) 
         
-        # 使用参数作为缓存key，确保参数相同才共享
+        # Use parameters as the cache key to ensure sharing only when parameters are identical
         cache_key = (theta, self.head_dim, max_seq_len, str(device))
         cls = type(self)
         if cache_key not in cls._rope_cache:
